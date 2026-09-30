@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from swarm_core.model_catalog import (
+from src.swarm_core.model_catalog import (
     CandidateStatus,
     CandidateTransitionError,
     EvaluationEvidence,

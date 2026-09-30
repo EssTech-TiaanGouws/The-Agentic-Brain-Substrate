@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from substrate.contracts import ScopeVector
-from swarm_core.core_evaluation import (
+from src.swarm_core.core_evaluation import (
     CoreAcceptancePolicy,
     CoreBenchmarkCase,
     CoreBenchmarkRunner,
