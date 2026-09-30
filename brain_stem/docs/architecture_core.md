@@ -192,7 +192,7 @@ Only after a measured runtime is selected, evaluate source-compiled hardware tun
 
 ### Neural Model Development Plan
 
-**Status: Planning baseline defined; no learned-model training or inference is implemented.**
+**Status: Planning baseline defined; no learned-model training or inference is implemented.** The first model-development support component is now an architecture-neutral candidate governance catalog; it does not load weights or itself demonstrate neural capability.
 
 1. **Core benchmark first:** evaluate the learned World Model Core locally for raw-intent interpretation, reasoning/planning, ambiguity handling, scope interpretation, consequence prediction, and specialist selection. The benchmark is hardware-neutral; profile candidate hardware only after task quality is measured.
 2. **Core candidate comparison:** compare new, brand-neutral architecture/weight candidates and parameter/quantization profiles. Do not select a model size by assumption. Keep the under-400 MB profile as a target and document quality/resource tradeoffs.
@@ -200,6 +200,10 @@ Only after a measured runtime is selected, evaluate source-compiled hardware tun
 4. **Expand from observed gaps:** use benchmark failures to select the next capability slot (for example coding, structured-data extraction, sensing, or response generation). Measure each specialist alone and as part of the Core-led system; compare against Core-only and single-model baselines.
 5. **Governed learning:** evaluate distillation, capability-specific training/fine-tuning, or other methods per slot. Candidate generation, evaluation, explicit approval, versioned registry admission, and rollback precede live use. Training data requires approval or explicit opt-in.
 6. **Surface expansion:** once local behavior is characterized, evaluate mobile and optional private-cloud profiles against the same capability contracts, privacy controls, and quality tests.
+
+Implemented planning support: `brain_stem/src/swarm_core/model_catalog.py` records proposed Core/specialist candidates with capability IDs, artifact hash/size, parameter count, authorized training-source references, evaluation evidence bound to the exact artifact, and explicit approval references. Capability lookup returns every approved candidate; it does not silently select or load one. Eight contract tests exercise provenance, evaluation, rejection, and approval.
+
+`brain_stem/src/swarm_core/core_evaluation.py` defines a hardware-neutral Core candidate interface, structured benchmark cases, injected acceptance thresholds, and artifact-bound `EvaluationEvidence` suitable for the candidate catalog. The initial contract measures scope integrity, task-graph validity, clarification accuracy, capability coverage, and interpreted-intent presence. Eight fixture-based tests cover correct plans, ambiguity handling, scope leaks, invalid graphs, candidate errors, malformed output, and caller-defined thresholds. This is an evaluator harness, not a learned model, real benchmark result, training data, or performance claim.
 
 Measure first-token latency, Core decision latency, specialist cold-load time, prompt-processing throughput, generated tokens/second, end-to-end task success, quality, memory, and energy separately. Autoregressive response generation is sequential, so thousands of output tokens/second is not a universal promise. Establish numeric targets from measured baselines and explicit workload profiles.
 
@@ -239,8 +243,11 @@ Real neural inference, generated-code execution, actual document/file mutation, 
 - Added `brain_stem/tests/cases/phase3_cases.py` for PREPARED denial, exact stage/critic/audit/commit ordering, worker/commit failures, compensation/INDETERMINATE handling, unresolved outcome receipt, replay/idempotency, cross-session concurrency, duplicate concurrent execution, and lease cleanup.
 - Added `brain_stem/tests/cases/phase4_cases.py` for handler order, duplicate/unknown formats, invalid handler output, mock worker taxonomy, and in-memory-only document staging.
 - The single discovered suite entrypoint is `brain_stem/tests/test_swarm_primitives.py`.
+- The neural planning pass added `brain_stem/src/swarm_core/model_catalog.py` and `brain_stem/tests/cases/phase5_cases.py`. It governs candidate metadata and approval but does not load, train, or claim to evaluate neural weights.
+- Added `brain_stem/src/swarm_core/core_evaluation.py` and `brain_stem/tests/cases/phase6_cases.py` as a structured Core benchmark contract. Its fixture tests validate the evaluator mechanics only; no learned candidate has been scored.
 - Added root `verify_parity_gates.py`, a one-shot full-suite and repository-state check. It prints clearance and exit status; it does not persist `master_parity_ledger.json` or run continuously.
-- Result: **45 tests passed** (7 Phase 1, 17 Phase 2, 13 Phase 3, 8 Phase 4); final parity sentinel reported `ARCHITECTURE_CLEARANCE=true` after the partial-tail regression was included.
+- Result before the model catalog: **45 tests passed** (7 Phase 1, 17 Phase 2, 13 Phase 3, 8 Phase 4); parity sentinel reported `ARCHITECTURE_CLEARANCE=true` in the canonical tree.
+- Current canonical test total: **61 tests passed**, including eight candidate-catalog governance tests and eight Core-evaluator contract tests. This still verifies software contracts, not learned-model quality.
 - Limits: transaction authorities are fakes; no real file writer, target backup, compensation implementation, hardware resource provider, model inference, cross-process journal lock, persistent parity result file, or autonomous daemon exists. A receipt write error after commit is explicitly unresolved and requires reconciliation before retry.
 
 **2026-09-30: Sovereign brain_stem indexing pass**
