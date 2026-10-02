@@ -48,9 +48,12 @@ from models.stacey.core.tokens import BYTE_VOCABULARY_SIZE, ByteTokenCodec
 from substrate.contracts import ScopeVector
 from training.stacey import StaceyTrainingError, run_synthetic_smoke_step, teacher_forcing_loss
 from src.swarm_core.stacey_core_benchmark import (
+    StaceyBenchmarkSplit,
+    StaceyCoreBenchmarkCase,
     StaceyCoreBenchmarkPolicy,
     StaceyCoreBenchmarkRunner,
     build_stacey_task_graph_fixture_suite,
+    build_stacey_task_graph_holdout_fixture_suite,
 )
 
 
@@ -153,7 +156,7 @@ def make_decision(ingress: UnifiedContextIngress) -> CoreDecisionEnvelope:
 
 
 def make_benchmark_fixture_decision(
-    case: object,
+    case: StaceyCoreBenchmarkCase,
 ) -> CoreDecisionEnvelope:
     ingress = case.ingress
     slot_by_capability = {
@@ -664,8 +667,8 @@ class StaceyCoreBenchmarkTests(unittest.TestCase):
     def setUp(self) -> None:
         self.suite = build_stacey_task_graph_fixture_suite()
 
-    def make_candidate(self, *, bad_resource_estimate: bool = False):
-        suite = self.suite
+    def make_candidate(self, *, suite=None, bad_resource_estimate: bool = False):
+        suite = suite or self.suite
 
         class FixtureCandidate:
             candidate_id = "stacey-task-graph-fixture-candidate"
@@ -690,10 +693,11 @@ class StaceyCoreBenchmarkTests(unittest.TestCase):
 
         return FixtureCandidate()
 
-    def run_candidate(self, candidate, *, resource_threshold: float = 1.0):
+    def run_candidate(self, candidate, *, suite=None, resource_threshold: float = 1.0):
+        suite = suite or self.suite
         return StaceyCoreBenchmarkRunner().run(
             candidate=candidate,
-            suite=self.suite,
+            suite=suite,
             policy=StaceyCoreBenchmarkPolicy(
                 minimum_case_pass_rate=1.0,
                 minimum_metric_rates=(("resource_estimate_accuracy_rate", resource_threshold),),
@@ -718,6 +722,20 @@ class StaceyCoreBenchmarkTests(unittest.TestCase):
 
         self.assertFalse(report.accepted)
         self.assertEqual(dict(report.metric_rates)["resource_estimate_accuracy_rate"], 2 / 3)
+
+    def test_separate_holdout_fixtures_have_disjoint_cases_and_score(self) -> None:
+        holdout = build_stacey_task_graph_holdout_fixture_suite()
+        development_ids = {case.case_id for case in self.suite.cases}
+        holdout_ids = {case.case_id for case in holdout.cases}
+
+        self.assertEqual(self.suite.split, StaceyBenchmarkSplit.DEVELOPMENT)
+        self.assertEqual(holdout.split, StaceyBenchmarkSplit.HOLDOUT_FIXTURE)
+        self.assertFalse(development_ids & holdout_ids)
+
+        report = self.run_candidate(self.make_candidate(suite=holdout), suite=holdout)
+
+        self.assertTrue(report.accepted)
+        self.assertEqual(len(report.case_results), 3)
 
 
 if __name__ == "__main__":

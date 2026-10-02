@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
 from models.stacey.core.inputs import (
@@ -28,6 +29,11 @@ from .model_catalog import EvaluationEvidence
 
 class StaceyBenchmarkError(ValueError):
     pass
+
+
+class StaceyBenchmarkSplit(str, Enum):
+    DEVELOPMENT = "DEVELOPMENT"
+    HOLDOUT_FIXTURE = "HOLDOUT_FIXTURE"
 
 
 _METRICS = (
@@ -126,10 +132,13 @@ class StaceyCoreBenchmarkCase:
 @dataclass(frozen=True, slots=True)
 class StaceyCoreBenchmarkSuite:
     suite_id: str
+    split: StaceyBenchmarkSplit
     cases: tuple[StaceyCoreBenchmarkCase, ...]
 
     def __post_init__(self) -> None:
         _text(self.suite_id, "suite_id")
+        if not isinstance(self.split, StaceyBenchmarkSplit):
+            raise StaceyBenchmarkError("split must be a StaceyBenchmarkSplit")
         if not isinstance(self.cases, tuple) or not self.cases:
             raise StaceyBenchmarkError("suite must contain at least one case")
         if any(not isinstance(case, StaceyCoreBenchmarkCase) for case in self.cases):
@@ -434,6 +443,7 @@ def build_stacey_task_graph_fixture_suite() -> StaceyCoreBenchmarkSuite:
 
     return StaceyCoreBenchmarkSuite(
         suite_id="stacey-task-graph-context-revision-fixture-v1",
+        split=StaceyBenchmarkSplit.DEVELOPMENT,
         cases=(
             StaceyCoreBenchmarkCase(
                 case_id="extract-before-summarize",
@@ -471,6 +481,173 @@ def build_stacey_task_graph_fixture_suite() -> StaceyCoreBenchmarkSuite:
                         "data.extract.alternative", "accelerator-memory", 130_000_000, 170_000_000
                     ),
                     ResourceEstimateExpectation("text.summarize", "accelerator-memory", 60_000_000, 100_000_000),
+                ),
+            ),
+        ),
+    )
+
+
+def build_stacey_task_graph_holdout_fixture_suite() -> StaceyCoreBenchmarkSuite:
+    """Visible rubric holdout fixtures; not protected or human-reviewed evaluation data."""
+    scope = ScopeVector(
+        "tenant-benchmark-holdout",
+        "user-benchmark-holdout",
+        "project-benchmark-holdout",
+        "workspace-benchmark-holdout",
+    )
+    observed_at_ns = 1_800_000_000_000_000_001
+
+    def make_ingress(
+        case_id: str,
+        intent: str,
+        slots: tuple[SpecialistSlot, ...],
+        assertion: LedgerAssertion,
+    ) -> UnifiedContextIngress:
+        return UnifiedContextIngress(
+            protocol_version="1.0",
+            transaction_id=f"tx-holdout-{case_id}",
+            correlation_id=f"turn-holdout-{case_id}",
+            ingress_timestamp_ns=observed_at_ns,
+            intent_vector=IntentVector(IntentKind.USER_LANGUAGE, intent),
+            scope_vector=scope,
+            canonical_state_assertions=(assertion,),
+            hardware_capability_matrix=HardwareCapabilityMatrix(
+                resources=(ResourceMeasurement("accelerator-memory", 2_000_000_000, observed_at_ns),),
+                active_leases=(ActiveResourceLease("lease-holdout", "accelerator-memory", 90_000_000),),
+                available_specialist_slots=slots,
+            ),
+        )
+
+    inventory_slots = (
+        SpecialistSlot(
+            block_id="BLOCK_10_STRUCTURAL_INGRESS",
+            capability_id="data.extract",
+            status=SpecialistAvailability.AVAILABLE,
+            resource_domain="accelerator-memory",
+            estimated_required_bytes=110_000_000,
+            artifact_sha256="1" * 64,
+            input_modalities=("structured-data",),
+        ),
+        SpecialistSlot(
+            block_id="BLOCK_9_ALGORITHMIC_CODER",
+            capability_id="stats.aggregate",
+            status=SpecialistAvailability.AVAILABLE,
+            resource_domain="accelerator-memory",
+            estimated_required_bytes=50_000_000,
+            artifact_sha256="2" * 64,
+            input_modalities=("structured-data",),
+        ),
+        SpecialistSlot(
+            block_id="BLOCK_12_LINGUISTIC_COPY",
+            capability_id="text.summarize",
+            status=SpecialistAvailability.AVAILABLE,
+            resource_domain="accelerator-memory",
+            estimated_required_bytes=80_000_000,
+            artifact_sha256="3" * 64,
+            input_modalities=("text",),
+        ),
+    )
+    inventory_ingress = make_ingress(
+        "inventory-three-stage",
+        "Count verified inventory by category and summarize totals.",
+        inventory_slots,
+        LedgerAssertion(
+            "inventory-is-verified",
+            "The inventory records are verified and grouped by item.",
+            "4" * 64,
+            "VERIFIED",
+        ),
+    )
+
+    archive_ingress = make_ingress(
+        "archive-ambiguity",
+        "Archive the latest one in the usual place.",
+        inventory_slots,
+        LedgerAssertion(
+            "archive-target-unknown",
+            "The intended item version and destination are not identified.",
+            "5" * 64,
+            "MISSING_CONTEXT",
+        ),
+    )
+
+    failed_summarizer = SpecialistSlot(
+        block_id="BLOCK_12_LINGUISTIC_COPY",
+        capability_id="text.summarize",
+        status=SpecialistAvailability.QUARANTINED,
+        resource_domain="accelerator-memory",
+        estimated_required_bytes=80_000_000,
+        artifact_sha256="3" * 64,
+        input_modalities=("text",),
+    )
+    alternate_summarizer = SpecialistSlot(
+        block_id="BLOCK_12_LINGUISTIC_COPY",
+        capability_id="text.summarize.alternative",
+        status=SpecialistAvailability.AVAILABLE,
+        resource_domain="accelerator-memory",
+        estimated_required_bytes=100_000_000,
+        artifact_sha256="6" * 64,
+        input_modalities=("text",),
+    )
+    summary_revision_ingress = make_ingress(
+        "summary-specialist-revision",
+        "Summarize the verified findings.",
+        (failed_summarizer, alternate_summarizer),
+        LedgerAssertion(
+            "summary-specialist-failed",
+            "text.summarize failed review and is quarantined; a reviewed alternative is available.",
+            "7" * 64,
+            "SPECIALIST_FAILED",
+        ),
+    )
+
+    return StaceyCoreBenchmarkSuite(
+        suite_id="stacey-task-graph-context-revision-holdout-fixture-v1",
+        split=StaceyBenchmarkSplit.HOLDOUT_FIXTURE,
+        cases=(
+            StaceyCoreBenchmarkCase(
+                case_id="inventory-three-stage-dependency",
+                ingress=inventory_ingress,
+                expected_clarification=False,
+                required_capabilities=("data.extract", "stats.aggregate", "text.summarize"),
+                forbidden_capabilities=(),
+                required_dependencies=(
+                    ("data.extract", "stats.aggregate"),
+                    ("stats.aggregate", "text.summarize"),
+                ),
+                consequence_concepts=(
+                    "extract inventory categories",
+                    "calculate totals",
+                    "summarize inventory",
+                ),
+                resource_expectations=(
+                    ResourceEstimateExpectation("data.extract", "accelerator-memory", 90_000_000, 130_000_000),
+                    ResourceEstimateExpectation("stats.aggregate", "accelerator-memory", 40_000_000, 70_000_000),
+                    ResourceEstimateExpectation("text.summarize", "accelerator-memory", 60_000_000, 100_000_000),
+                ),
+            ),
+            StaceyCoreBenchmarkCase(
+                case_id="archive-ambiguity-asks-first",
+                ingress=archive_ingress,
+                expected_clarification=True,
+                required_capabilities=(),
+                forbidden_capabilities=("data.extract", "stats.aggregate", "text.summarize"),
+                required_dependencies=(),
+                consequence_concepts=("which item", "destination"),
+                resource_expectations=(),
+            ),
+            StaceyCoreBenchmarkCase(
+                case_id="revise-after-summary-specialist-failure",
+                ingress=summary_revision_ingress,
+                expected_clarification=False,
+                required_capabilities=("text.summarize.alternative",),
+                forbidden_capabilities=("text.summarize",),
+                required_dependencies=(),
+                consequence_concepts=("previous summary specialist failed", "alternate summarizer"),
+                resource_expectations=(
+                    ResourceEstimateExpectation(
+                        "text.summarize.alternative", "accelerator-memory", 80_000_000, 120_000_000
+                    ),
                 ),
             ),
         ),
