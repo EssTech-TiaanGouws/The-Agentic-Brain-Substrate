@@ -1,0 +1,1 @@
+"""Stacey is the complete agentic model; this package holds its Core candidate."""

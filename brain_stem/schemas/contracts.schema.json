@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Agentic Brain Substrate Phase 1 Contracts",
-  "description": "Serialized in-process intent contract for the CPU-only routing prototype.",
+  "title": "Stacey and Agentic Brain Substrate Contracts",
+  "description": "Shared JSON contract definitions for substrate routing and Stacey Core v0 ingress/decision records.",
   "$ref": "#/$defs/intentEnvelope",
   "$defs": {
     "scopeVector": {
@@ -33,6 +33,168 @@
         "action": { "const": "ROUTE_TASK" },
         "goal": { "type": "string", "minLength": 1 },
         "scope": { "$ref": "#/$defs/scopeVector" }
+      }
+    },
+    "intentVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "payload", "source_event_id"],
+      "properties": {
+        "kind": { "enum": ["USER_LANGUAGE", "STRUCTURED_EVENT"] },
+        "payload": { "type": "string", "minLength": 1 },
+        "source_event_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "ledgerAssertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assertion_id", "content_summary", "provenance_sha256", "last_observed_state"],
+      "properties": {
+        "assertion_id": { "type": "string", "minLength": 1 },
+        "content_summary": { "type": "string", "minLength": 1 },
+        "provenance_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "last_observed_state": { "type": "string", "minLength": 1 }
+      }
+    },
+    "resourceMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_domain", "measured_available_bytes", "observed_at_ns"],
+      "properties": {
+        "resource_domain": { "type": "string", "minLength": 1 },
+        "measured_available_bytes": { "type": "integer", "minimum": 0 },
+        "observed_at_ns": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "activeResourceLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease_id", "resource_domain", "reserved_bytes"],
+      "properties": {
+        "lease_id": { "type": "string", "minLength": 1 },
+        "resource_domain": { "type": "string", "minLength": 1 },
+        "reserved_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "specialistSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["block_id", "capability_id", "status", "resource_domain", "estimated_required_bytes", "artifact_sha256", "input_modalities"],
+      "properties": {
+        "block_id": { "type": "string", "minLength": 1 },
+        "capability_id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["AVAILABLE", "BUSY", "UNAVAILABLE", "QUARANTINED"] },
+        "resource_domain": { "type": "string", "minLength": 1 },
+        "estimated_required_bytes": { "type": "integer", "minimum": 0 },
+        "artifact_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "input_modalities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      }
+    },
+    "hardwareCapabilityMatrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resources", "active_leases", "available_specialist_slots"],
+      "properties": {
+        "resources": { "type": "array", "items": { "$ref": "#/$defs/resourceMeasurement" } },
+        "active_leases": { "type": "array", "items": { "$ref": "#/$defs/activeResourceLease" } },
+        "available_specialist_slots": { "type": "array", "items": { "$ref": "#/$defs/specialistSlot" } }
+      }
+    },
+    "unifiedContextIngress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "transaction_id", "correlation_id", "ingress_timestamp_ns", "intent_vector", "scope_vector", "canonical_state_assertions", "hardware_capability_matrix"],
+      "properties": {
+        "protocol_version": { "const": "1.0" },
+        "transaction_id": { "type": "string", "minLength": 1 },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "ingress_timestamp_ns": { "type": "integer", "minimum": 0 },
+        "intent_vector": { "$ref": "#/$defs/intentVector" },
+        "scope_vector": { "$ref": "#/$defs/scopeVector" },
+        "canonical_state_assertions": { "type": "array", "items": { "$ref": "#/$defs/ledgerAssertion" } },
+        "hardware_capability_matrix": { "$ref": "#/$defs/hardwareCapabilityMatrix" }
+      }
+    },
+    "taskGraphNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_id", "capability_id", "target_block_id"],
+      "properties": {
+        "step_id": { "type": "string", "minLength": 1 },
+        "capability_id": { "type": "string", "minLength": 1 },
+        "target_block_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "taskGraphEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_step_id", "target_step_id", "condition"],
+      "properties": {
+        "source_step_id": { "type": "string", "minLength": 1 },
+        "target_step_id": { "type": "string", "minLength": 1 },
+        "condition": { "enum": ["ON_SUCCESS", "ON_FAILURE", "ALWAYS"] }
+      }
+    },
+    "resourceEstimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_id", "resource_domain", "estimated_required_bytes"],
+      "properties": {
+        "step_id": { "type": "string", "minLength": 1 },
+        "resource_domain": { "type": "string", "minLength": 1 },
+        "estimated_required_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "taskDependencyGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges", "resource_estimates"],
+      "properties": {
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/taskGraphNode" } },
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/taskGraphEdge" } },
+        "resource_estimates": { "type": "array", "items": { "$ref": "#/$defs/resourceEstimate" } }
+      }
+    },
+    "clarificationDirective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "reason_codes"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "reason_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["AMBIGUOUS_INTENT", "MISSING_REQUIRED_CONTEXT", "CONFLICTING_CONSTRAINTS", "LOW_CONFIDENCE", "CAPABILITY_UNAVAILABLE"] }
+        }
+      }
+    },
+    "coreDecisionEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "transaction_id", "correlation_id", "assigned_block_id", "predicted_consequences_summary", "calibration_metrics", "declarative_intent"],
+      "properties": {
+        "protocol_version": { "const": "1.0" },
+        "transaction_id": { "type": "string", "minLength": 1 },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "assigned_block_id": { "const": "BLOCK_0_CORE" },
+        "predicted_consequences_summary": { "type": "string", "minLength": 1 },
+        "calibration_metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["confidence_coefficient"],
+          "properties": { "confidence_coefficient": { "type": "number", "minimum": 0, "maximum": 1 } }
+        },
+        "declarative_intent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action", "scope_vector", "task_dependency_graph", "clarification"],
+          "properties": {
+            "action": { "const": "DECOMPOSE_TASK_GRAPH" },
+            "scope_vector": { "$ref": "#/$defs/scopeVector" },
+            "task_dependency_graph": { "$ref": "#/$defs/taskDependencyGraph" },
+            "clarification": { "$ref": "#/$defs/clarificationDirective" }
+          }
+        }
       }
     }
   }
