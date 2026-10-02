@@ -14,6 +14,7 @@ from .inputs import (
 )
 from .network import StaceyCore, StaceyCoreInputError
 from .initialize import initialize_stacey_core
+from .inference import StaceyCoreInferenceAdapter, StaceyInferenceError
 from .outputs import (
     CalibrationMetrics,
     ClarificationDirective,
@@ -42,9 +43,11 @@ __all__ = [
     "ResourceMeasurement",
     "SpecialistSlot",
     "StaceyCore",
+    "StaceyCoreInferenceAdapter",
     "StaceyCoreInputError",
     "StaceyCoreConfig",
     "StaceyIngressError",
+    "StaceyInferenceError",
     "StaceyOutputError",
     "SpecialistAvailability",
     "StaceyCheckpointError",

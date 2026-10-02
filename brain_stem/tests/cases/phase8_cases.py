@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -25,8 +26,10 @@ from models.stacey.core import (
     SpecialistAvailability,
     SpecialistSlot,
     StaceyCore,
+    StaceyCoreInferenceAdapter,
     StaceyCoreConfig,
     StaceyCoreInputError,
+    StaceyInferenceError,
     StaceyOutputError,
     TaskDependencyEdge,
     TaskDependencyGraph,
@@ -44,6 +47,11 @@ from models.stacey.core.inputs import StaceyIngressError
 from models.stacey.core.tokens import BYTE_VOCABULARY_SIZE, ByteTokenCodec
 from substrate.contracts import ScopeVector
 from training.stacey import StaceyTrainingError, run_synthetic_smoke_step, teacher_forcing_loss
+from src.swarm_core.stacey_core_benchmark import (
+    StaceyCoreBenchmarkPolicy,
+    StaceyCoreBenchmarkRunner,
+    build_stacey_task_graph_fixture_suite,
+)
 
 
 SCOPE = ScopeVector("tenant-stacey", "user-stacey", "project-stacey", "workspace-stacey")
@@ -141,6 +149,56 @@ def make_decision(ingress: UnifiedContextIngress) -> CoreDecisionEnvelope:
             ),
         ),
         clarification=ClarificationDirective(False, ()),
+    )
+
+
+def make_benchmark_fixture_decision(
+    case: object,
+) -> CoreDecisionEnvelope:
+    ingress = case.ingress
+    slot_by_capability = {
+        slot.capability_id: slot
+        for slot in ingress.hardware_capability_matrix.available_specialist_slots
+    }
+    step_by_capability = {
+        capability_id: f"{case.case_id}-step-{index}"
+        for index, capability_id in enumerate(case.required_capabilities)
+    }
+    nodes = tuple(
+        TaskGraphNode(
+            step_by_capability[capability_id],
+            capability_id,
+            slot_by_capability[capability_id].block_id,
+        )
+        for capability_id in case.required_capabilities
+    )
+    edges = tuple(
+        TaskDependencyEdge(step_by_capability[source], step_by_capability[target], EdgeCondition.ON_SUCCESS)
+        for source, target in case.required_dependencies
+    )
+    estimates = tuple(
+        ResourceEstimate(
+            step_by_capability[expectation.capability_id],
+            expectation.resource_domain,
+            expectation.minimum_bytes,
+        )
+        for expectation in case.resource_expectations
+    )
+    return CoreDecisionEnvelope(
+        protocol_version="1.0",
+        transaction_id=ingress.transaction_id,
+        correlation_id=ingress.correlation_id,
+        assigned_block_id="BLOCK_0_CORE",
+        predicted_consequences_summary="; ".join(case.consequence_concepts),
+        calibration_metrics=CalibrationMetrics(0.2 if case.expected_clarification else 0.8),
+        declarative_intent_action="DECOMPOSE_TASK_GRAPH",
+        scope_vector=ingress.scope_vector,
+        task_dependency_graph=TaskDependencyGraph(nodes, edges, estimates),
+        clarification=(
+            ClarificationDirective(True, ("MISSING_REQUIRED_CONTEXT",))
+            if case.expected_clarification
+            else ClarificationDirective(False, ())
+        ),
     )
 
 
@@ -559,6 +617,107 @@ class StaceyNeuralSkeletonTests(unittest.TestCase):
                 maximum_output_tokens=64,
                 dropout_probability=0.0,
             )
+
+
+class StaceyInferenceAdapterTests(unittest.TestCase):
+    def make_adapter(self, model: StaceyCore, *, minimum_confidence: float = 0.5) -> StaceyCoreInferenceAdapter:
+        return StaceyCoreInferenceAdapter(
+            model,
+            candidate_id="stacey-core-fixture",
+            artifact_sha256="9" * 64,
+            minimum_confidence=minimum_confidence,
+        )
+
+    def make_generated_tokens(self, decision: CoreDecisionEnvelope) -> torch.Tensor:
+        token_ids = ByteTokenCodec().encode(decision.to_jsonl())[1:]
+        return torch.tensor([token_ids], dtype=torch.long)
+
+    def test_adapter_decodes_and_validates_generated_envelope_for_exact_ingress(self) -> None:
+        model = initialize_stacey_core(make_config(), random_seed=53)
+        ingress = make_ingress()
+        expected = make_decision(ingress)
+        generated = self.make_generated_tokens(expected)
+
+        with patch.object(model, "generate_token_ids", return_value=generated) as generate:
+            decision = self.make_adapter(model).decide(ingress)
+
+        self.assertEqual(decision, expected)
+        source_token_ids = generate.call_args.args[0]
+        self.assertEqual(model.codec.decode(tuple(source_token_ids[0].tolist())), ingress.to_canonical_json())
+
+    def test_adapter_blocks_low_confidence_decision(self) -> None:
+        model = initialize_stacey_core(make_config(), random_seed=59)
+        low_confidence = replace(make_decision(make_ingress()), calibration_metrics=CalibrationMetrics(0.2))
+        with patch.object(model, "generate_token_ids", return_value=self.make_generated_tokens(low_confidence)):
+            with self.assertRaises(StaceyInferenceError):
+                self.make_adapter(model, minimum_confidence=0.5).decide(make_ingress())
+
+    def test_adapter_rejects_malformed_generated_jsonl(self) -> None:
+        model = initialize_stacey_core(make_config(), random_seed=61)
+        malformed = torch.tensor([ByteTokenCodec().encode("not a decision")[1:]], dtype=torch.long)
+        with patch.object(model, "generate_token_ids", return_value=malformed):
+            with self.assertRaises(StaceyInferenceError):
+                self.make_adapter(model).decide(make_ingress())
+
+
+class StaceyCoreBenchmarkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.suite = build_stacey_task_graph_fixture_suite()
+
+    def make_candidate(self, *, bad_resource_estimate: bool = False):
+        suite = self.suite
+
+        class FixtureCandidate:
+            candidate_id = "stacey-task-graph-fixture-candidate"
+            artifact_sha256 = "8" * 64
+
+            def decide(self, ingress: UnifiedContextIngress) -> CoreDecisionEnvelope:
+                case = next(case for case in suite.cases if case.ingress.transaction_id == ingress.transaction_id)
+                decision = make_benchmark_fixture_decision(case)
+                if bad_resource_estimate and case.case_id == "extract-before-summarize":
+                    graph = decision.task_dependency_graph
+                    estimates = tuple(
+                        replace(estimate, estimated_required_bytes=1)
+                        if estimate.step_id.endswith("step-0")
+                        else estimate
+                        for estimate in graph.resource_estimates
+                    )
+                    decision = replace(
+                        decision,
+                        task_dependency_graph=replace(graph, resource_estimates=estimates),
+                    )
+                return decision
+
+        return FixtureCandidate()
+
+    def run_candidate(self, candidate, *, resource_threshold: float = 1.0):
+        return StaceyCoreBenchmarkRunner().run(
+            candidate=candidate,
+            suite=self.suite,
+            policy=StaceyCoreBenchmarkPolicy(
+                minimum_case_pass_rate=1.0,
+                minimum_metric_rates=(("resource_estimate_accuracy_rate", resource_threshold),),
+            ),
+            run_reference="fixture-run-001",
+            baseline_reference="reviewed-fixture-outcomes-v1",
+        )
+
+    def test_task_graph_fixture_suite_passes_and_emits_artifact_bound_evidence(self) -> None:
+        report = self.run_candidate(self.make_candidate())
+
+        self.assertTrue(report.accepted)
+        self.assertEqual(len(report.case_results), 3)
+        self.assertTrue(all(result.passed for result in report.case_results))
+        self.assertEqual(dict(report.metric_rates)["required_dependency_rate"], 1.0)
+        self.assertEqual(dict(report.metric_rates)["consequence_prediction_rate"], 1.0)
+        self.assertEqual(dict(report.metric_rates)["resource_estimate_accuracy_rate"], 1.0)
+        self.assertEqual(report.evidence.artifact_sha256, "8" * 64)
+
+    def test_out_of_range_resource_estimate_fails_acceptance(self) -> None:
+        report = self.run_candidate(self.make_candidate(bad_resource_estimate=True))
+
+        self.assertFalse(report.accepted)
+        self.assertEqual(dict(report.metric_rates)["resource_estimate_accuracy_rate"], 2 / 3)
 
 
 if __name__ == "__main__":
