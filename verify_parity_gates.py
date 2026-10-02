@@ -20,6 +20,7 @@ REQUIRED_FILES = (
     "brain_stem/src/swarm_core/format_adapters.py",
     "brain_stem/src/swarm_core/model_catalog.py",
     "brain_stem/src/swarm_core/core_evaluation.py",
+    "brain_stem/src/swarm_core/training_readiness.py",
     "verify_parity_gates.py",
     "brain_stem/tests/test_swarm_primitives.py",
     "brain_stem/tests/cases/phase1_cases.py",
@@ -28,6 +29,7 @@ REQUIRED_FILES = (
     "brain_stem/tests/cases/phase4_cases.py",
     "brain_stem/tests/cases/phase5_cases.py",
     "brain_stem/tests/cases/phase6_cases.py",
+    "brain_stem/tests/cases/phase7_cases.py",
 )
 REQUIRED_MASTER_MARKERS = (
     "### Phase 3: Transaction Coordinator",
