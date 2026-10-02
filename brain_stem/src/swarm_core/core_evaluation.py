@@ -7,10 +7,20 @@ from typing import Protocol
 
 from substrate.contracts import ScopeVector
 
-from .model_catalog import EvaluationEvidence
+from .model_catalog import (
+    CandidateStatus,
+    CandidateTransitionError,
+    EvaluationEvidence,
+    ModelCandidate,
+    ModelCandidateCatalog,
+)
 
 
 class CoreEvaluationError(ValueError):
+    pass
+
+
+class CoreExperimentError(CoreEvaluationError):
     pass
 
 
@@ -177,6 +187,12 @@ class CoreBenchmarkReport:
     evidence: EvaluationEvidence
 
 
+@dataclass(frozen=True, slots=True)
+class CoreExperimentResult:
+    report: CoreBenchmarkReport
+    candidate: ModelCandidate
+
+
 class CoreBenchmarkRunner:
     """Runs structured Core tasks; thresholds and candidate execution are injected."""
 
@@ -338,3 +354,50 @@ class CoreBenchmarkRunner:
                 if dict(result.checks).get(metric_name, False)
             ) / denominator
         return tuple(sorted(rates.items()))
+
+
+class CoreExperimentWorkbench:
+    """Evaluates an injected candidate and records evidence without approving it."""
+
+    def __init__(
+        self,
+        catalog: ModelCandidateCatalog,
+        benchmark_runner: CoreBenchmarkRunner | None = None,
+    ) -> None:
+        if not isinstance(catalog, ModelCandidateCatalog):
+            raise CoreExperimentError("catalog must be a ModelCandidateCatalog")
+        if benchmark_runner is not None and not isinstance(benchmark_runner, CoreBenchmarkRunner):
+            raise CoreExperimentError("benchmark_runner must be a CoreBenchmarkRunner")
+        self._catalog = catalog
+        self._benchmark_runner = benchmark_runner or CoreBenchmarkRunner()
+
+    def evaluate_candidate(
+        self,
+        *,
+        candidate_id: str,
+        candidate: WorldModelCoreCandidate,
+        suite: CoreBenchmarkSuite,
+        policy: CoreAcceptancePolicy,
+        run_reference: str,
+        baseline_reference: str,
+    ) -> CoreExperimentResult:
+        _required_text(candidate_id, "candidate_id")
+        registered = self._catalog.get(candidate_id)
+        if registered is None:
+            raise CoreExperimentError("Candidate must be registered before evaluation")
+        if registered.status is not CandidateStatus.PROPOSED:
+            raise CandidateTransitionError("Only proposed candidates can enter a new experiment run")
+        if getattr(candidate, "candidate_id", None) != registered.candidate_id:
+            raise CoreExperimentError("Inference adapter candidate ID does not match the catalog record")
+        if getattr(candidate, "artifact_sha256", None) != registered.artifact_sha256:
+            raise CoreExperimentError("Inference adapter artifact digest does not match the catalog record")
+
+        report = self._benchmark_runner.run(
+            candidate=candidate,
+            suite=suite,
+            policy=policy,
+            run_reference=run_reference,
+            baseline_reference=baseline_reference,
+        )
+        evaluated_candidate = self._catalog.record_evaluation(candidate_id, report.evidence)
+        return CoreExperimentResult(report=report, candidate=evaluated_candidate)

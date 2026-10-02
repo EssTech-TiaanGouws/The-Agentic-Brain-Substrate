@@ -9,8 +9,19 @@ from src.swarm_core.core_evaluation import (
     CoreBenchmarkRunner,
     CoreBenchmarkSuite,
     CoreDecision,
+    CoreExperimentError,
+    CoreExperimentWorkbench,
     CorePlanStep,
     CoreRequest,
+)
+from src.swarm_core.model_catalog import (
+    CandidateStatus,
+    CandidateTransitionError,
+    ModelCandidate,
+    ModelCandidateCatalog,
+    ModelRole,
+    TrainingDataAuthorization,
+    TrainingSource,
 )
 
 
@@ -223,6 +234,104 @@ class CoreEvaluationTests(unittest.TestCase):
         self.assertFalse(report.accepted)
         self.assertEqual(dict(report.metric_rates)["clarification_accuracy_rate"], 2 / 3)
         self.assertEqual(dict(report.metric_rates)["capability_coverage_rate"], 1.0)
+
+
+class CoreExperimentWorkbenchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.catalog = ModelCandidateCatalog()
+        self.workbench = CoreExperimentWorkbench(self.catalog)
+        self.suite = make_suite()
+
+    @staticmethod
+    def make_catalog_candidate() -> ModelCandidate:
+        return ModelCandidate(
+            candidate_id=FixtureCore.candidate_id,
+            version="candidate-version",
+            role=ModelRole.WORLD_MODEL_CORE,
+            capability_ids=("core.reasoning_planning", "core.specialist_selection"),
+            artifact_sha256=ARTIFACT_SHA256,
+            artifact_size_bytes=500_000_000,
+            parameter_count=800_000_000,
+            training_sources=(
+                TrainingSource(
+                    source_id="approved-fixture-dataset",
+                    authorization=TrainingDataAuthorization.APPROVED_DATASET,
+                    authorization_reference="training-approval-reference",
+                ),
+            ),
+        )
+
+    def test_workbench_records_artifact_bound_evaluation_but_does_not_approve(self) -> None:
+        registered = self.catalog.propose(self.make_catalog_candidate())
+        result = self.workbench.evaluate_candidate(
+            candidate_id=registered.candidate_id,
+            candidate=make_good_core(),
+            suite=self.suite,
+            policy=strict_policy(),
+            run_reference="candidate-run-reference",
+            baseline_reference="baseline-reference",
+        )
+
+        self.assertTrue(result.report.accepted)
+        self.assertEqual(result.report.evidence.artifact_sha256, registered.artifact_sha256)
+        self.assertEqual(result.candidate.status, CandidateStatus.EVALUATED)
+        self.assertEqual(self.catalog.approved_for("core.reasoning_planning"), ())
+
+    def test_workbench_rejects_adapter_for_different_artifact(self) -> None:
+        registered = self.catalog.propose(self.make_catalog_candidate())
+        wrong_artifact = make_good_core()
+        wrong_artifact.artifact_sha256 = "d" * 64
+
+        with self.assertRaises(CoreExperimentError):
+            self.workbench.evaluate_candidate(
+                candidate_id=registered.candidate_id,
+                candidate=wrong_artifact,
+                suite=self.suite,
+                policy=strict_policy(),
+                run_reference="candidate-run-reference",
+                baseline_reference="baseline-reference",
+            )
+
+        self.assertEqual(self.catalog.get(registered.candidate_id).status, CandidateStatus.PROPOSED)
+
+    def test_workbench_records_failed_evaluation_as_rejected(self) -> None:
+        registered = self.catalog.propose(self.make_catalog_candidate())
+        decisions = make_good_core().decisions.copy()
+        decisions["simple"] = RuntimeError("candidate execution failed")
+
+        result = self.workbench.evaluate_candidate(
+            candidate_id=registered.candidate_id,
+            candidate=FixtureCore(decisions),
+            suite=self.suite,
+            policy=strict_policy(),
+            run_reference="failed-candidate-run",
+            baseline_reference="baseline-reference",
+        )
+
+        self.assertFalse(result.report.accepted)
+        self.assertEqual(result.candidate.status, CandidateStatus.REJECTED)
+        self.assertEqual(self.catalog.approved_for("core.reasoning_planning"), ())
+
+    def test_workbench_refuses_to_repeat_evaluation_after_terminal_evidence(self) -> None:
+        registered = self.catalog.propose(self.make_catalog_candidate())
+        self.workbench.evaluate_candidate(
+            candidate_id=registered.candidate_id,
+            candidate=make_good_core(),
+            suite=self.suite,
+            policy=strict_policy(),
+            run_reference="candidate-run-reference",
+            baseline_reference="baseline-reference",
+        )
+
+        with self.assertRaises(CandidateTransitionError):
+            self.workbench.evaluate_candidate(
+                candidate_id=registered.candidate_id,
+                candidate=make_good_core(),
+                suite=self.suite,
+                policy=strict_policy(),
+                run_reference="second-run-reference",
+                baseline_reference="baseline-reference",
+            )
 
 
 if __name__ == "__main__":
