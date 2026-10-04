@@ -136,6 +136,19 @@ class CoreTrainingReadinessTests(unittest.TestCase):
         self.assertFalse(report.ready_to_start)
         self.assertIn("measured accelerator memory is below the declared run requirement", report.blockers)
 
+    def test_cpu_only_execution_profile_allows_zero_device_memory_requirement(self) -> None:
+        profile = TrainingExecutionProfile(
+            profile_id="cpu-scratch-pilot",
+            accelerator_profile_id="cpu",
+            required_device_memory_bytes=0,
+            maximum_steps=1,
+            maximum_wall_time_seconds=60,
+            checkpoint_interval_steps=1,
+            precision_profile_id="fp32",
+        )
+
+        self.assertEqual(profile.required_device_memory_bytes, 0)
+
     def test_backend_must_support_the_selected_training_method(self) -> None:
         environment = make_environment(supported_methods=(TrainingMethod.FROM_SCRATCH,))
 

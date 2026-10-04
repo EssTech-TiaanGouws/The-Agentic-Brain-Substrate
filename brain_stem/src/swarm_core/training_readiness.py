@@ -98,8 +98,8 @@ class TrainingExecutionProfile:
     def __post_init__(self) -> None:
         for field_name in ("profile_id", "accelerator_profile_id", "precision_profile_id"):
             _required_text(getattr(self, field_name), field_name)
+        _nonnegative_integer(self.required_device_memory_bytes, "required_device_memory_bytes")
         for field_name in (
-            "required_device_memory_bytes",
             "maximum_steps",
             "maximum_wall_time_seconds",
             "checkpoint_interval_steps",
@@ -235,7 +235,7 @@ class CoreTrainingReadinessChecker:
             if plan.teacher_candidate_id not in environment.available_teacher_candidate_ids:
                 blockers.append("declared teacher candidate is unavailable to the training environment")
 
-        plan_digest = self._plan_digest(plan)
+        plan_digest = self.plan_digest(plan)
         return TrainingReadinessReport(
             candidate_id=plan.candidate_id,
             plan_sha256=plan_digest,
@@ -246,7 +246,9 @@ class CoreTrainingReadinessChecker:
         )
 
     @staticmethod
-    def _plan_digest(plan: CoreTrainingRunPlan) -> str:
+    def plan_digest(plan: CoreTrainingRunPlan) -> str:
+        if not isinstance(plan, CoreTrainingRunPlan):
+            raise TrainingPlanError("plan must be a CoreTrainingRunPlan")
         import hashlib
         import json
 

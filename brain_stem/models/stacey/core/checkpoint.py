@@ -6,6 +6,7 @@ import re
 import stat
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 import torch
 
@@ -77,11 +78,41 @@ def load_model_checkpoint(
     path = Path(source)
     if path.is_symlink() or not path.is_file():
         raise StaceyCheckpointError("checkpoint source must be a regular non-symlink file")
-    actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-    if actual_sha256 != expected_sha256:
-        raise StaceyCheckpointError("checkpoint digest does not match the expected artifact digest")
+    with path.open("rb") as checkpoint_file:
+        return load_model_checkpoint_stream(
+            checkpoint_file,
+            expected_sha256=expected_sha256,
+            map_location=map_location,
+        )
+
+
+def load_model_checkpoint_stream(
+    source: BinaryIO,
+    *,
+    expected_sha256: str,
+    map_location: str | torch.device,
+) -> StaceyCore:
+    if not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise StaceyCheckpointError("expected_sha256 must be a lowercase SHA-256 digest")
+    if not callable(getattr(source, "read", None)) or not callable(getattr(source, "seek", None)):
+        raise StaceyCheckpointError("checkpoint stream must be readable and seekable")
     try:
-        bundle = torch.load(path, map_location=map_location, weights_only=True)
+        source.seek(0)
+        digest = hashlib.sha256()
+        while chunk := source.read(1024 * 1024):
+            if not isinstance(chunk, bytes):
+                raise StaceyCheckpointError("checkpoint stream must return bytes")
+            digest.update(chunk)
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise StaceyCheckpointError("checkpoint digest does not match the expected artifact digest")
+        source.seek(0)
+    except StaceyCheckpointError:
+        raise
+    except Exception as error:
+        raise StaceyCheckpointError("checkpoint stream could not be verified") from error
+    try:
+        bundle = torch.load(source, map_location=map_location, weights_only=True)
     except Exception as error:
         raise StaceyCheckpointError("checkpoint could not be safely loaded") from error
     if not isinstance(bundle, dict) or set(bundle) != {"format_id", "config", "state_dict"}:
@@ -90,6 +121,8 @@ def load_model_checkpoint(
         raise StaceyCheckpointError("unsupported Stacey checkpoint format")
     config = StaceyCoreConfig.from_dict(bundle["config"])
     model = StaceyCore(config)
+    if actual_sha256 != expected_sha256:
+        raise StaceyCheckpointError("checkpoint digest does not match the expected artifact digest")
     try:
         model.load_state_dict(bundle["state_dict"], strict=True)
     except Exception as error:

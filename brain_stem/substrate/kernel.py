@@ -5,6 +5,7 @@ from .blocks.block_08_epistemic_auditor.service import EpistemicAuditor
 from .contracts import ExecutionReport, Intent, ScopeVector
 from .errors import IngressRejected
 from .workers.mock_worker import MockWorker
+from src.swarm_core.identity import ScopeAuthorizationVerifier, SignedScopeGrant
 
 
 class SubstrateKernel:
@@ -15,15 +16,25 @@ class SubstrateKernel:
         worker: MockWorker | None = None,
         adversarial_verifier: AdversarialVerifier | None = None,
         epistemic_auditor: EpistemicAuditor | None = None,
+        authorization_verifier: ScopeAuthorizationVerifier | None = None,
     ) -> None:
         self._classifier = SemanticClassifier()
         self._decomposer = TacticalDecomposer()
         self._worker = worker or MockWorker()
         self._adversarial_verifier = adversarial_verifier or AdversarialVerifier()
         self._epistemic_auditor = epistemic_auditor or EpistemicAuditor()
+        if authorization_verifier is None:
+            raise ValueError("A trusted scope authorization verifier is required")
+        self._authorization_verifier = authorization_verifier
 
-    def route(self, intent: Intent, authorized_scope: ScopeVector) -> ExecutionReport:
-        self._validate_ingress(intent, authorized_scope)
+    def route(self, intent: Intent, authorization: SignedScopeGrant) -> ExecutionReport:
+        self._validate_ingress(intent)
+        try:
+            authorized_scope = self._authorization_verifier.authorize(intent, authorization)
+        except PermissionError as error:
+            raise IngressRejected("Caller authorization was rejected") from error
+        if not isinstance(authorized_scope, ScopeVector) or not authorized_scope.is_complete():
+            raise IngressRejected("Authorization verifier returned an incomplete scope")
 
         profile = self._classifier.classify(intent)
         plan = self._decomposer.decompose(intent, profile)
@@ -42,15 +53,11 @@ class SubstrateKernel:
         )
 
     @staticmethod
-    def _validate_ingress(intent: Intent, authorized_scope: ScopeVector) -> None:
+    def _validate_ingress(intent: Intent) -> None:
         if not isinstance(intent, Intent):
             raise IngressRejected("Ingress payload must be a typed Intent")
         if not isinstance(intent.scope, ScopeVector) or not intent.scope.is_complete():
             raise IngressRejected("Ingress requires all four non-empty scope fields")
-        if not isinstance(authorized_scope, ScopeVector) or not authorized_scope.is_complete():
-            raise IngressRejected("Trusted authorization scope is incomplete")
-        if intent.scope != authorized_scope:
-            raise IngressRejected("Intent scope does not match authorized caller scope")
         identifiers_and_goal = (
             intent.transaction_id,
             intent.correlation_id,

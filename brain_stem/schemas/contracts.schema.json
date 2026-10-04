@@ -192,7 +192,55 @@
             "action": { "const": "DECOMPOSE_TASK_GRAPH" },
             "scope_vector": { "$ref": "#/$defs/scopeVector" },
             "task_dependency_graph": { "$ref": "#/$defs/taskDependencyGraph" },
-            "clarification": { "$ref": "#/$defs/clarificationDirective" }
+            "clarification": { "$ref": "#/$defs/clarificationDirective" },
+            "system_inspection": {
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["purpose", "probe_ids", "required_capabilities"],
+                  "properties": {
+                    "purpose": { "type": "string", "minLength": 1 },
+                    "probe_ids": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": { "type": "string", "minLength": 1 }
+                    },
+                    "required_capabilities": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["capability_id", "required_control_ids", "minimum_resources"],
+                        "properties": {
+                          "capability_id": { "type": "string", "minLength": 1 },
+                          "required_control_ids": {
+                            "type": "array",
+                            "uniqueItems": true,
+                            "items": { "type": "string", "minLength": 1 }
+                          },
+                          "minimum_resources": {
+                            "type": "array",
+                            "items": {
+                              "type": "array",
+                              "prefixItems": [
+                                { "type": "string", "minLength": 1 },
+                                { "type": "integer", "minimum": 1 }
+                              ],
+                              "minItems": 2,
+                              "maxItems": 2
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
           }
         }
       }

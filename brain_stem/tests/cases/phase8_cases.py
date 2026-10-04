@@ -25,6 +25,8 @@ from models.stacey.core import (
     ResourceMeasurement,
     SpecialistAvailability,
     SpecialistSlot,
+    SystemCapabilityRequirement,
+    SystemInspectionDirective,
     StaceyCore,
     StaceyCoreInferenceAdapter,
     StaceyCoreConfig,
@@ -494,6 +496,26 @@ class StaceyOutputContractTests(unittest.TestCase):
         ingress = make_ingress()
         self.assertEqual(list(ingress_validator.iter_errors(ingress.to_payload())), [])
         self.assertEqual(list(decision_validator.iter_errors(make_decision(ingress).to_payload())), [])
+        inspection_decision = replace(
+            make_decision(ingress),
+            task_dependency_graph=TaskDependencyGraph((), (), ()),
+            clarification=ClarificationDirective(True, ("MISSING_REQUIRED_CONTEXT",)),
+            system_inspection=SystemInspectionDirective(
+                "Check whether the browser workflow can run safely.",
+                ("viewport.capture", "dom.read"),
+                (
+                    SystemCapabilityRequirement(
+                        "vision.inspect",
+                        ("read-only", "viewport-access"),
+                        (("host-memory", 1024),),
+                    ),
+                ),
+            ),
+        )
+        self.assertEqual(
+            list(decision_validator.iter_errors(inspection_decision.to_payload())),
+            [],
+        )
 
 
 class StaceyNeuralSkeletonTests(unittest.TestCase):

@@ -5,4 +5,9 @@ The frozen project blueprint and live master architecture are indexed under `bra
 - [Frozen Charter](brain_stem/charter.md)
 - [Master Architecture](brain_stem/docs/architecture_core.md)
 
-This repository contains the local-first Agentic Brain Substrate. Run `python3 verify_parity_gates.py` from the repository root for one-shot verification.
+This repository contains the local-first Agentic Brain Substrate. Install the declared runtime and model-test dependencies, then run the one-shot verification from the repository root:
+
+```sh
+python3 -m pip install -r brain_stem/requirements.txt -r brain_stem/models/stacey/requirements.txt
+python3 verify_parity_gates.py
+```

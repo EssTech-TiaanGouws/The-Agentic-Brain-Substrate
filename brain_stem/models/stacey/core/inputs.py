@@ -162,6 +162,130 @@ class UnifiedContextIngress:
         if not isinstance(self.hardware_capability_matrix, HardwareCapabilityMatrix):
             raise StaceyIngressError("hardware_capability_matrix must be a HardwareCapabilityMatrix")
 
+    @classmethod
+    def from_payload(cls, payload: object) -> UnifiedContextIngress:
+        def object_with_keys(value: object, expected: set[str], name: str) -> dict[str, object]:
+            if not isinstance(value, dict) or set(value) != expected:
+                raise StaceyIngressError(f"{name} has missing or unknown fields")
+            return value
+
+        try:
+            top = object_with_keys(
+                payload,
+                {
+                    "protocol_version",
+                    "transaction_id",
+                    "correlation_id",
+                    "ingress_timestamp_ns",
+                    "intent_vector",
+                    "scope_vector",
+                    "canonical_state_assertions",
+                    "hardware_capability_matrix",
+                },
+                "ingress",
+            )
+            intent = object_with_keys(
+                top["intent_vector"],
+                {"kind", "payload", "source_event_id"},
+                "intent_vector",
+            )
+            scope = object_with_keys(
+                top["scope_vector"],
+                {"tenant_id", "user_id", "project_id", "workspace_id"},
+                "scope_vector",
+            )
+            assertions_data = top["canonical_state_assertions"]
+            if not isinstance(assertions_data, list):
+                raise StaceyIngressError("canonical_state_assertions must be an array")
+            assertions: list[LedgerAssertion] = []
+            for assertion_data in assertions_data:
+                assertion = object_with_keys(
+                    assertion_data,
+                    {"assertion_id", "content_summary", "provenance_sha256", "last_observed_state"},
+                    "ledger assertion",
+                )
+                assertions.append(LedgerAssertion(**assertion))
+
+            matrix = object_with_keys(
+                top["hardware_capability_matrix"],
+                {"resources", "active_leases", "available_specialist_slots"},
+                "hardware_capability_matrix",
+            )
+            for field_name in ("resources", "active_leases", "available_specialist_slots"):
+                if not isinstance(matrix[field_name], list):
+                    raise StaceyIngressError(f"{field_name} must be an array")
+
+            resources: list[ResourceMeasurement] = []
+            for resource_data in matrix["resources"]:
+                resource = object_with_keys(
+                    resource_data,
+                    {"resource_domain", "measured_available_bytes", "observed_at_ns"},
+                    "resource measurement",
+                )
+                resources.append(ResourceMeasurement(**resource))
+
+            leases: list[ActiveResourceLease] = []
+            for lease_data in matrix["active_leases"]:
+                lease = object_with_keys(
+                    lease_data,
+                    {"lease_id", "resource_domain", "reserved_bytes"},
+                    "active resource lease",
+                )
+                leases.append(ActiveResourceLease(**lease))
+
+            slots: list[SpecialistSlot] = []
+            for slot_data in matrix["available_specialist_slots"]:
+                slot = object_with_keys(
+                    slot_data,
+                    {
+                        "block_id",
+                        "capability_id",
+                        "status",
+                        "resource_domain",
+                        "estimated_required_bytes",
+                        "artifact_sha256",
+                        "input_modalities",
+                    },
+                    "specialist slot",
+                )
+                modalities = slot["input_modalities"]
+                if not isinstance(modalities, list):
+                    raise StaceyIngressError("input_modalities must be an array")
+                slots.append(
+                    SpecialistSlot(
+                        block_id=slot["block_id"],
+                        capability_id=slot["capability_id"],
+                        status=SpecialistAvailability(slot["status"]),
+                        resource_domain=slot["resource_domain"],
+                        estimated_required_bytes=slot["estimated_required_bytes"],
+                        artifact_sha256=slot["artifact_sha256"],
+                        input_modalities=tuple(modalities),
+                    )
+                )
+
+            return cls(
+                protocol_version=top["protocol_version"],
+                transaction_id=top["transaction_id"],
+                correlation_id=top["correlation_id"],
+                ingress_timestamp_ns=top["ingress_timestamp_ns"],
+                intent_vector=IntentVector(
+                    kind=IntentKind(intent["kind"]),
+                    payload=intent["payload"],
+                    source_event_id=intent["source_event_id"],
+                ),
+                scope_vector=ScopeVector(**scope),
+                canonical_state_assertions=tuple(assertions),
+                hardware_capability_matrix=HardwareCapabilityMatrix(
+                    resources=tuple(resources),
+                    active_leases=tuple(leases),
+                    available_specialist_slots=tuple(slots),
+                ),
+            )
+        except StaceyIngressError:
+            raise
+        except (KeyError, TypeError, ValueError) as error:
+            raise StaceyIngressError("ingress payload contains invalid field values") from error
+
     def to_payload(self) -> dict[str, object]:
         return {
             "protocol_version": self.protocol_version,

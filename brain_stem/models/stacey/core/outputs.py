@@ -119,6 +119,58 @@ class ClarificationDirective:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemCapabilityRequirement:
+    capability_id: str
+    required_control_ids: tuple[str, ...]
+    minimum_resources: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        _text(self.capability_id, "system_inspection.capability_id")
+        if not isinstance(self.required_control_ids, tuple):
+            raise StaceyOutputError("system_inspection.required_control_ids must be a tuple")
+        for control_id in self.required_control_ids:
+            _text(control_id, "system_inspection.required_control_id")
+        if len(set(self.required_control_ids)) != len(self.required_control_ids):
+            raise StaceyOutputError("system inspection control IDs must be unique")
+        if not isinstance(self.minimum_resources, tuple):
+            raise StaceyOutputError("system_inspection.minimum_resources must be a tuple")
+        seen_domains: set[str] = set()
+        for entry in self.minimum_resources:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                raise StaceyOutputError("system inspection resources must be (domain, bytes) pairs")
+            domain, required_bytes = entry
+            _text(domain, "system_inspection.resource_domain")
+            if isinstance(required_bytes, bool) or not isinstance(required_bytes, int) or required_bytes <= 0:
+                raise StaceyOutputError("system_inspection.required_bytes must be a positive integer")
+            if domain in seen_domains:
+                raise StaceyOutputError("system inspection resource domains must be unique")
+            seen_domains.add(domain)
+
+
+@dataclass(frozen=True, slots=True)
+class SystemInspectionDirective:
+    purpose: str
+    probe_ids: tuple[str, ...]
+    required_capabilities: tuple[SystemCapabilityRequirement, ...]
+
+    def __post_init__(self) -> None:
+        _text(self.purpose, "system_inspection.purpose")
+        if not isinstance(self.probe_ids, tuple) or not self.probe_ids:
+            raise StaceyOutputError("system_inspection.probe_ids must be a non-empty tuple")
+        for probe_id in self.probe_ids:
+            _text(probe_id, "system_inspection.probe_id")
+        if len(set(self.probe_ids)) != len(self.probe_ids):
+            raise StaceyOutputError("system_inspection probe IDs must be unique")
+        if not isinstance(self.required_capabilities, tuple) or not self.required_capabilities:
+            raise StaceyOutputError("system_inspection.required_capabilities must be a non-empty tuple")
+        if any(not isinstance(item, SystemCapabilityRequirement) for item in self.required_capabilities):
+            raise StaceyOutputError("system_inspection.required_capabilities contains an invalid entry")
+        capability_ids = tuple(item.capability_id for item in self.required_capabilities)
+        if len(set(capability_ids)) != len(capability_ids):
+            raise StaceyOutputError("system inspection capability IDs must be unique")
+
+
+@dataclass(frozen=True, slots=True)
 class CalibrationMetrics:
     confidence_coefficient: float
 
@@ -142,8 +194,31 @@ class CoreDecisionEnvelope:
     scope_vector: ScopeVector
     task_dependency_graph: TaskDependencyGraph
     clarification: ClarificationDirective
+    system_inspection: SystemInspectionDirective | None = None
+
+    def __post_init__(self) -> None:
+        if self.system_inspection is not None and not isinstance(self.system_inspection, SystemInspectionDirective):
+            raise StaceyOutputError("system_inspection must be a SystemInspectionDirective or None")
+        if self.system_inspection is not None and (
+            not self.clarification.required or self.task_dependency_graph.nodes
+        ):
+            raise StaceyOutputError("system inspection must request clarification before task dispatch")
 
     def to_payload(self) -> dict[str, object]:
+        inspection_payload = None
+        if self.system_inspection is not None:
+            inspection_payload = {
+                "purpose": self.system_inspection.purpose,
+                "probe_ids": list(self.system_inspection.probe_ids),
+                "required_capabilities": [
+                    {
+                        "capability_id": requirement.capability_id,
+                        "required_control_ids": list(requirement.required_control_ids),
+                        "minimum_resources": [list(resource) for resource in requirement.minimum_resources],
+                    }
+                    for requirement in self.system_inspection.required_capabilities
+                ],
+            }
         return {
             "protocol_version": self.protocol_version,
             "transaction_id": self.transaction_id,
@@ -191,6 +266,7 @@ class CoreDecisionEnvelope:
                     "required": self.clarification.required,
                     "reason_codes": list(self.clarification.reason_codes),
                 },
+                "system_inspection": inspection_payload,
             },
         }
 
@@ -240,11 +316,15 @@ def parse_decision_jsonl(line: str, ingress: UnifiedContextIngress) -> CoreDecis
     calibration_metrics = CalibrationMetrics(calibration["confidence_coefficient"])
 
     intent = payload["declarative_intent"]
-    if not isinstance(intent, dict) or set(intent) != {
+    base_intent_fields = {
         "action",
         "scope_vector",
         "task_dependency_graph",
         "clarification",
+    }
+    if not isinstance(intent, dict) or frozenset(intent) not in {
+        frozenset(base_intent_fields),
+        frozenset(base_intent_fields | {"system_inspection"}),
     }:
         raise StaceyOutputError("declarative_intent has missing or unknown fields")
     if intent["action"] != "DECOMPOSE_TASK_GRAPH":
@@ -349,6 +429,47 @@ def parse_decision_jsonl(line: str, ingress: UnifiedContextIngress) -> CoreDecis
     if clarification.required and nodes:
         raise StaceyOutputError("Core must not dispatch specialist work while clarification is required")
 
+    inspection_data = intent.get("system_inspection")
+    system_inspection = None
+    if inspection_data is not None:
+        if not isinstance(inspection_data, dict) or set(inspection_data) != {
+            "purpose", "probe_ids", "required_capabilities"
+        }:
+            raise StaceyOutputError("system_inspection has missing or unknown fields")
+        probe_ids = inspection_data["probe_ids"]
+        requirements_data = inspection_data["required_capabilities"]
+        if not isinstance(probe_ids, list) or not isinstance(requirements_data, list):
+            raise StaceyOutputError("system_inspection probes and required_capabilities must be arrays")
+        requirements: list[SystemCapabilityRequirement] = []
+        for requirement_data in requirements_data:
+            if not isinstance(requirement_data, dict) or set(requirement_data) != {
+                "capability_id", "required_control_ids", "minimum_resources"
+            }:
+                raise StaceyOutputError("system capability requirement has missing or unknown fields")
+            control_ids = requirement_data["required_control_ids"]
+            resources_data = requirement_data["minimum_resources"]
+            if not isinstance(control_ids, list) or not isinstance(resources_data, list):
+                raise StaceyOutputError("system capability controls/resources must be arrays")
+            resources: list[tuple[str, int]] = []
+            for resource in resources_data:
+                if not isinstance(resource, list) or len(resource) != 2:
+                    raise StaceyOutputError("system resource requirement must be a [domain, bytes] pair")
+                resources.append((resource[0], resource[1]))
+            requirements.append(
+                SystemCapabilityRequirement(
+                    capability_id=requirement_data["capability_id"],
+                    required_control_ids=tuple(control_ids),
+                    minimum_resources=tuple(resources),
+                )
+            )
+        system_inspection = SystemInspectionDirective(
+            purpose=inspection_data["purpose"],
+            probe_ids=tuple(probe_ids),
+            required_capabilities=tuple(requirements),
+        )
+        if not clarification.required or nodes:
+            raise StaceyOutputError("system inspection must request clarification before task dispatch")
+
     return CoreDecisionEnvelope(
         protocol_version=payload["protocol_version"],
         transaction_id=payload["transaction_id"],
@@ -360,6 +481,7 @@ def parse_decision_jsonl(line: str, ingress: UnifiedContextIngress) -> CoreDecis
         scope_vector=scope,
         task_dependency_graph=TaskDependencyGraph(tuple(nodes), tuple(edges), tuple(estimates)),
         clarification=clarification,
+        system_inspection=system_inspection,
     )
 
 
